@@ -1,0 +1,371 @@
+from polympiads.contrib.auth.models import User
+from django.contrib.auth.models import Group, Permission
+from django.contrib.contenttypes.models import ContentType
+from django.test import TestCase
+from rest_framework import status
+from rest_framework.test import APIRequestFactory, force_authenticate
+
+from polympiads.contrib.auth.views.groups import GroupViewSet
+
+# from polympiads.contrib.auth.views import GroupViewSet
+
+factory = APIRequestFactory()
+
+
+def make_user(username, permission_codenames=()):
+    """Create a plain user and optionally assign Group model permissions."""
+    user = User.objects.create_user(username=username, password="pw")
+    ct = ContentType.objects.get_for_model(Group)
+    for codename in permission_codenames:
+        perm = Permission.objects.get(codename=codename, content_type=ct)
+        user.user_permissions.add(perm)
+    return user
+
+
+def get_view(action_method_map, pk=None):
+    view = GroupViewSet.as_view(action_method_map)
+
+    def dispatch(request):
+        return view(request, pk=pk) if pk is not None else view(request)
+
+    return dispatch
+
+
+# ---------------------------------------------------------------------------
+# 1. LIST  (GET /groups/)  —  requires view_group
+# ---------------------------------------------------------------------------
+
+class TestListAction(TestCase):
+
+    def test_unauthenticated_returns_401(self):
+        request = factory.get("/groups/")
+        response = get_view({"get": "list"})(request)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_authenticated_without_permissions_is_denied(self):
+        user = make_user("no_perms_l")
+        request = factory.get("/groups/")
+        force_authenticate(request, user=user)
+        response = get_view({"get": "list"})(request)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_authenticated_with_view_permission_succeeds(self):
+        user = make_user("viewer_l", permission_codenames=["view_group"])
+        request = factory.get("/groups/")
+        force_authenticate(request, user=user)
+        response = get_view({"get": "list"})(request)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_response_is_a_list(self):
+        user = make_user("viewer_l2", permission_codenames=["view_group"])
+        request = factory.get("/groups/")
+        force_authenticate(request, user=user)
+        response = get_view({"get": "list"})(request)
+        response.render()
+        self.assertIsInstance(response.data, list)
+
+    def test_response_items_contain_expected_fields(self):
+        Group.objects.create(name="Test Group")
+        user = make_user("viewer_l3", permission_codenames=["view_group"])
+        request = factory.get("/groups/")
+        force_authenticate(request, user=user)
+        response = get_view({"get": "list"})(request)
+        response.render()
+        self.assertTrue(len(response.data) > 0)
+        item = response.data[0]
+        for field in ("id", "name", "permissions"):
+            self.assertIn(field, item)
+
+    def test_authenticated_with_only_add_permission_is_denied(self):
+        user = make_user("adder_l", permission_codenames=["add_group"])
+        request = factory.get("/groups/")
+        force_authenticate(request, user=user)
+        response = get_view({"get": "list"})(request)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_authenticated_with_only_change_permission_is_denied(self):
+        user = make_user("changer_l", permission_codenames=["change_group"])
+        request = factory.get("/groups/")
+        force_authenticate(request, user=user)
+        response = get_view({"get": "list"})(request)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_authenticated_with_only_delete_permission_is_denied(self):
+        user = make_user("deleter_l", permission_codenames=["delete_group"])
+        request = factory.get("/groups/")
+        force_authenticate(request, user=user)
+        response = get_view({"get": "list"})(request)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+# ---------------------------------------------------------------------------
+# 2. RETRIEVE  (GET /groups/<pk>/)  —  requires view_group
+# ---------------------------------------------------------------------------
+
+class TestRetrieveAction(TestCase):
+
+    def setUp(self):
+        self.group = Group.objects.create(name="Retrieve Test Group")
+
+    def test_unauthenticated_returns_401(self):
+        request = factory.get(f"/groups/{self.group.pk}/")
+        response = get_view({"get": "retrieve"}, pk=self.group.pk)(request)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_authenticated_without_permissions_is_denied(self):
+        user = make_user("no_perms_r")
+        request = factory.get(f"/groups/{self.group.pk}/")
+        force_authenticate(request, user=user)
+        response = get_view({"get": "retrieve"}, pk=self.group.pk)(request)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_authenticated_with_view_permission_succeeds(self):
+        user = make_user("viewer_r", permission_codenames=["view_group"])
+        request = factory.get(f"/groups/{self.group.pk}/")
+        force_authenticate(request, user=user)
+        response = get_view({"get": "retrieve"}, pk=self.group.pk)(request)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_response_contains_expected_fields(self):
+        user = make_user("viewer_r2", permission_codenames=["view_group"])
+        request = factory.get(f"/groups/{self.group.pk}/")
+        force_authenticate(request, user=user)
+        response = get_view({"get": "retrieve"}, pk=self.group.pk)(request)
+        response.render()
+        for field in ("id", "name", "permissions"):
+            self.assertIn(field, response.data)
+
+    def test_retrieve_non_existent_pk_returns_404(self):
+        user = make_user("viewer_r3", permission_codenames=["view_group"])
+        request = factory.get("/groups/999999/")
+        force_authenticate(request, user=user)
+        response = get_view({"get": "retrieve"}, pk=999999)(request)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_authenticated_with_only_change_permission_is_denied(self):
+        user = make_user("changer_r", permission_codenames=["change_group"])
+        request = factory.get(f"/groups/{self.group.pk}/")
+        force_authenticate(request, user=user)
+        response = get_view({"get": "retrieve"}, pk=self.group.pk)(request)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+# ---------------------------------------------------------------------------
+# 3. CREATE  (POST /groups/)  —  requires add_group
+# ---------------------------------------------------------------------------
+
+class TestCreateAction(TestCase):
+
+    payload = {"name": "New Group"}
+
+    def test_unauthenticated_returns_401(self):
+        request = factory.post("/groups/", self.payload)
+        response = get_view({"post": "create"})(request)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_authenticated_without_permissions_is_denied(self):
+        user = make_user("no_perms_c")
+        request = factory.post("/groups/", self.payload)
+        force_authenticate(request, user=user)
+        response = get_view({"post": "create"})(request)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_authenticated_with_only_view_permission_is_denied(self):
+        user = make_user("viewer_c", permission_codenames=["view_group"])
+        request = factory.post("/groups/", self.payload)
+        force_authenticate(request, user=user)
+        response = get_view({"post": "create"})(request)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_authenticated_with_only_change_permission_is_denied(self):
+        user = make_user("changer_c", permission_codenames=["change_group"])
+        request = factory.post("/groups/", self.payload)
+        force_authenticate(request, user=user)
+        response = get_view({"post": "create"})(request)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_authenticated_with_add_permission_succeeds(self):
+        user = make_user("adder_c", permission_codenames=["add_group"])
+        request = factory.post("/groups/", self.payload)
+        force_authenticate(request, user=user)
+        response = get_view({"post": "create"})(request)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_create_persists_to_database(self):
+        user = make_user("adder_c2", permission_codenames=["add_group"])
+        request = factory.post("/groups/", {"name": "Persisted Group"})
+        force_authenticate(request, user=user)
+        get_view({"post": "create"})(request)
+        self.assertTrue(Group.objects.filter(name="Persisted Group").exists())
+
+    def test_create_with_duplicate_name_returns_400(self):
+        Group.objects.create(name="Duplicate Group")
+        user = make_user("adder_c3", permission_codenames=["add_group"])
+        request = factory.post("/groups/", {"name": "Duplicate Group"})
+        force_authenticate(request, user=user)
+        response = get_view({"post": "create"})(request)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+# ---------------------------------------------------------------------------
+# 4. UPDATE  (PUT /groups/<pk>/)  —  requires change_group
+# ---------------------------------------------------------------------------
+
+class TestUpdateAction(TestCase):
+
+    def setUp(self):
+        self.group = Group.objects.create(name="Update Test Group")
+        self.url = f"/groups/{self.group.pk}/"
+        self.payload = {"name": "Updated Group"}
+
+    def test_unauthenticated_returns_401(self):
+        request = factory.put(self.url, self.payload)
+        response = get_view({"put": "update"}, pk=self.group.pk)(request)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_authenticated_without_permissions_is_denied(self):
+        user = make_user("no_perms_u")
+        request = factory.put(self.url, self.payload)
+        force_authenticate(request, user=user)
+        response = get_view({"put": "update"}, pk=self.group.pk)(request)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_authenticated_with_only_view_permission_is_denied(self):
+        user = make_user("viewer_u", permission_codenames=["view_group"])
+        request = factory.put(self.url, self.payload)
+        force_authenticate(request, user=user)
+        response = get_view({"put": "update"}, pk=self.group.pk)(request)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_authenticated_with_only_add_permission_is_denied(self):
+        user = make_user("adder_u", permission_codenames=["add_group"])
+        request = factory.put(self.url, self.payload)
+        force_authenticate(request, user=user)
+        response = get_view({"put": "update"}, pk=self.group.pk)(request)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_authenticated_with_change_permission_succeeds(self):
+        user = make_user("changer_u", permission_codenames=["change_group"])
+        request = factory.put(self.url, self.payload)
+        force_authenticate(request, user=user)
+        response = get_view({"put": "update"}, pk=self.group.pk)(request)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_update_persists_to_database(self):
+        user = make_user("changer_u2", permission_codenames=["change_group"])
+        request = factory.put(self.url, {"name": "Renamed Group"})
+        force_authenticate(request, user=user)
+        get_view({"put": "update"}, pk=self.group.pk)(request)
+        self.group.refresh_from_db()
+        self.assertEqual(self.group.name, "Renamed Group")
+
+
+# ---------------------------------------------------------------------------
+# 5. PARTIAL UPDATE  (PATCH /groups/<pk>/)  —  requires change_group
+# ---------------------------------------------------------------------------
+
+class TestPartialUpdateAction(TestCase):
+
+    def setUp(self):
+        self.group = Group.objects.create(name="Patch Test Group")
+        self.url = f"/groups/{self.group.pk}/"
+
+    def test_unauthenticated_returns_401(self):
+        request = factory.patch(self.url, {"name": "Patched"})
+        response = get_view({"patch": "partial_update"}, pk=self.group.pk)(request)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_authenticated_without_permissions_is_denied(self):
+        user = make_user("no_perms_p")
+        request = factory.patch(self.url, {"name": "Patched"})
+        force_authenticate(request, user=user)
+        response = get_view({"patch": "partial_update"}, pk=self.group.pk)(request)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_authenticated_with_only_view_permission_is_denied(self):
+        user = make_user("viewer_p", permission_codenames=["view_group"])
+        request = factory.patch(self.url, {"name": "Patched"})
+        force_authenticate(request, user=user)
+        response = get_view({"patch": "partial_update"}, pk=self.group.pk)(request)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_authenticated_with_only_add_permission_is_denied(self):
+        user = make_user("adder_p", permission_codenames=["add_group"])
+        request = factory.patch(self.url, {"name": "Patched"})
+        force_authenticate(request, user=user)
+        response = get_view({"patch": "partial_update"}, pk=self.group.pk)(request)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_authenticated_with_change_permission_succeeds(self):
+        user = make_user("changer_p", permission_codenames=["change_group"])
+        request = factory.patch(self.url, {"name": "Patched"})
+        force_authenticate(request, user=user)
+        response = get_view({"patch": "partial_update"}, pk=self.group.pk)(request)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_partial_update_persists_to_database(self):
+        user = make_user("changer_p2", permission_codenames=["change_group"])
+        request = factory.patch(self.url, {"name": "Partially Renamed"})
+        force_authenticate(request, user=user)
+        get_view({"patch": "partial_update"}, pk=self.group.pk)(request)
+        self.group.refresh_from_db()
+        self.assertEqual(self.group.name, "Partially Renamed")
+
+
+# ---------------------------------------------------------------------------
+# 6. DESTROY  (DELETE /groups/<pk>/)  —  requires delete_group
+# ---------------------------------------------------------------------------
+
+class TestDestroyAction(TestCase):
+
+    def setUp(self):
+        self.group = Group.objects.create(name="Delete Test Group")
+        self.url = f"/groups/{self.group.pk}/"
+
+    def test_unauthenticated_returns_401(self):
+        request = factory.delete(self.url)
+        response = get_view({"delete": "destroy"}, pk=self.group.pk)(request)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_authenticated_without_permissions_is_denied(self):
+        user = make_user("no_perms_d")
+        request = factory.delete(self.url)
+        force_authenticate(request, user=user)
+        response = get_view({"delete": "destroy"}, pk=self.group.pk)(request)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_authenticated_with_only_view_permission_is_denied(self):
+        user = make_user("viewer_d", permission_codenames=["view_group"])
+        request = factory.delete(self.url)
+        force_authenticate(request, user=user)
+        response = get_view({"delete": "destroy"}, pk=self.group.pk)(request)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_authenticated_with_only_change_permission_is_denied(self):
+        user = make_user("changer_d", permission_codenames=["change_group"])
+        request = factory.delete(self.url)
+        force_authenticate(request, user=user)
+        response = get_view({"delete": "destroy"}, pk=self.group.pk)(request)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_authenticated_with_delete_permission_succeeds(self):
+        user = make_user("deleter_d", permission_codenames=["delete_group"])
+        request = factory.delete(self.url)
+        force_authenticate(request, user=user)
+        response = get_view({"delete": "destroy"}, pk=self.group.pk)(request)
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+    def test_delete_removes_from_database(self):
+        user = make_user("deleter_d2", permission_codenames=["delete_group"])
+        pk = self.group.pk
+        request = factory.delete(self.url)
+        force_authenticate(request, user=user)
+        get_view({"delete": "destroy"}, pk=pk)(request)
+        self.assertFalse(Group.objects.filter(pk=pk).exists())
+
+    def test_delete_non_existent_pk_returns_404(self):
+        user = make_user("deleter_d3", permission_codenames=["delete_group"])
+        request = factory.delete("/groups/999999/")
+        force_authenticate(request, user=user)
+        response = get_view({"delete": "destroy"}, pk=999999)(request)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)

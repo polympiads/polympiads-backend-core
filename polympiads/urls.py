@@ -20,12 +20,7 @@ from django.urls    import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework.authtoken import views
 
-# from polympiads.contrib.auth.views import UserViewSet, GroupViewSet, PermissionViewSet
-
-router = DefaultRouter()
-# router.register(r"auth/users", UserViewSet)
-# router.register(r"auth/groups", GroupViewSet)
-# router.register(r"auth/permissions", PermissionViewSet)
+from polympiads.core.router import router
 
 urlpatterns = [
     path('admin/', admin.site.urls),
