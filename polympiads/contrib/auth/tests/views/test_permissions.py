@@ -64,7 +64,8 @@ class TestListAction(TestCase):
         force_authenticate(request, user=user)
         response = get_view({"get": "list"})(request)
         response.render()
-        self.assertIsInstance(response.data, list)
+        self.assertIsInstance(response.data, dict)
+        self.assertIsInstance(response.data["results"], list)
 
     def test_user_with_only_add_permission_is_denied(self):
         user = make_user("adder", permission_codenames=["add_permission"])
@@ -297,3 +298,153 @@ class TestDestroyAction(TestCase):
         force_authenticate(request, user=user)
         response = get_view({"delete": "destroy"}, pk=self.permission_instance.pk)(request)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+# ---------------------------------------------------------------------------
+# 7. FILTERING, SEARCHING & ORDERING  (GET /permissions/)
+# ---------------------------------------------------------------------------
+
+class TestFilteringSearchingOrdering(TestCase):
+
+    def setUp(self):
+        self.viewer = make_user("viewer_f", permission_codenames=["view_permission"])
+        self.ct = ContentType.objects.get_for_model(Permission)
+
+    def _list(self, query_params=None):
+        request = factory.get("/permissions/", query_params or {})
+        force_authenticate(request, user=self.viewer)
+        response = get_view({"get": "list"})(request)
+        response.render()
+        return response
+
+    def _names(self, response):
+        return [p["name"] for p in response.data["results"]]
+
+    # ------------------------------------------------------------------ #
+    # Pagination structure                                                 #
+    # ------------------------------------------------------------------ #
+
+    def test_response_has_pagination_envelope(self):
+        response = self._list()
+        for key in ("count", "next", "previous", "results"):
+            self.assertIn(key, response.data)
+
+    def test_count_reflects_total_not_page_size(self):
+        total = Permission.objects.count()
+        response = self._list({"page_size": 1})
+        self.assertEqual(response.data["count"], total)
+        self.assertEqual(len(response.data["results"]), 1)
+
+    def test_next_is_present_when_results_exceed_page_size(self):
+        response = self._list({"page_size": 1})
+        self.assertIsNotNone(response.data["next"])
+
+    def test_previous_is_none_on_first_page(self):
+        response = self._list({"page_size": 1})
+        self.assertIsNone(response.data["previous"])
+
+    def test_page_2_returns_different_results(self):
+        page1 = self._names(self._list({"page_size": 2, "page": 1}))
+        page2 = self._names(self._list({"page_size": 2, "page": 2}))
+        self.assertEqual(len(set(page1) & set(page2)), 0)
+
+    # ------------------------------------------------------------------ #
+    # Filtering — name                                                     #
+    # ------------------------------------------------------------------ #
+
+    def test_filter_name_icontains_matches(self):
+        response = self._list({"name": "Can view"})
+        names = self._names(response)
+        self.assertGreater(len(names), 0)
+        self.assertTrue(all("view" in n.lower() for n in names))
+
+    def test_filter_name_case_insensitive(self):
+        response = self._list({"name": "CAN VIEW"})
+        self.assertGreater(response.data["count"], 0)
+
+    def test_filter_name_no_match_returns_empty(self):
+        response = self._list({"name": "zzznomatch"})
+        self.assertEqual(response.data["count"], 0)
+        self.assertEqual(response.data["results"], [])
+
+    def test_filter_name_partial_match(self):
+        response = self._list({"name": "permission"})
+        self.assertGreater(response.data["count"], 0)
+        names = self._names(response)
+        self.assertTrue(all("permission" in n.lower() for n in names))
+
+    def test_filter_name_narrows_results(self):
+        total    = self._list().data["count"]
+        filtered = self._list({"name": "Can view"}).data["count"]
+        self.assertLess(filtered, total)
+
+    # ------------------------------------------------------------------ #
+    # Search                                                               #
+    # ------------------------------------------------------------------ #
+
+    def test_search_matches_name(self):
+        response = self._list({"search": "view permission"})
+        self.assertGreater(response.data["count"], 0)
+
+    def test_search_is_case_insensitive(self):
+        response = self._list({"search": "VIEW PERMISSION"})
+        self.assertGreater(response.data["count"], 0)
+
+    def test_search_no_match_returns_empty(self):
+        response = self._list({"search": "zzznomatch"})
+        self.assertEqual(response.data["count"], 0)
+
+    def test_search_returns_subset_of_unfiltered(self):
+        total    = self._list().data["count"]
+        filtered = self._list({"search": "view"}).data["count"]
+        self.assertLessEqual(filtered, total)
+
+    # ------------------------------------------------------------------ #
+    # Ordering                                                             #
+    # ------------------------------------------------------------------ #
+
+    def test_default_ordering_is_by_pk_descending(self):
+        response = self._list()
+        ids = [p["id"] for p in response.data["results"]]
+        self.assertEqual(ids, sorted(ids, reverse=True))
+
+    def test_ordering_name_ascending(self):
+        response = self._list({"ordering": "name"})
+        names = self._names(response)
+        self.assertEqual(names, sorted(names))
+
+    def test_ordering_name_descending(self):
+        response = self._list({"ordering": "-name"})
+        names = self._names(response)
+        self.assertEqual(names, sorted(names, reverse=True))
+
+    def test_ordering_non_whitelisted_field_is_ignored(self):
+        response = self._list({"ordering": "codename"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_ordering_unknown_field_falls_back_to_default(self):
+        default   = self._names(self._list())
+        with_junk = self._names(self._list({"ordering": "nonexistent_field"}))
+        self.assertEqual(default, with_junk)
+
+    # ------------------------------------------------------------------ #
+    # Combined                                                             #
+    # ------------------------------------------------------------------ #
+
+    def test_filter_and_search_combined(self):
+        response = self._list({"name": "Can view", "search": "permission"})
+        self.assertGreater(response.data["count"], 0)
+        names = self._names(response)
+        self.assertTrue(all("view" in n.lower() for n in names))
+
+    def test_filter_ordering_pagination_combined(self):
+        response = self._list({
+            "name":      "Can",
+            "ordering":  "name",
+            "page":      1,
+            "page_size": 2,
+        })
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertGreaterEqual(response.data["count"], 2)
+        names = self._names(response)
+        self.assertEqual(len(names), 2)
+        self.assertEqual(names, sorted(names))

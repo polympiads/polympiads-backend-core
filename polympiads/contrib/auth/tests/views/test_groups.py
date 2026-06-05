@@ -62,7 +62,8 @@ class TestListAction(TestCase):
         force_authenticate(request, user=user)
         response = get_view({"get": "list"})(request)
         response.render()
-        self.assertIsInstance(response.data, list)
+        self.assertIsInstance(response.data, dict)
+        self.assertIsInstance(response.data["results"], list)
 
     def test_response_items_contain_expected_fields(self):
         Group.objects.create(name="Test Group")
@@ -71,8 +72,8 @@ class TestListAction(TestCase):
         force_authenticate(request, user=user)
         response = get_view({"get": "list"})(request)
         response.render()
-        self.assertTrue(len(response.data) > 0)
-        item = response.data[0]
+        self.assertTrue(len(response.data["results"]) > 0)
+        item = response.data["results"][0]
         for field in ("id", "name", "permissions"):
             self.assertIn(field, item)
 
@@ -369,3 +370,179 @@ class TestDestroyAction(TestCase):
         force_authenticate(request, user=user)
         response = get_view({"delete": "destroy"}, pk=999999)(request)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+# ---------------------------------------------------------------------------
+# 7. FILTERING, SEARCHING & ORDERING  (GET /groups/)
+# ---------------------------------------------------------------------------
+
+class TestFilteringSearchingOrdering(TestCase):
+
+    def setUp(self):
+        self.viewer = make_user("viewer_f", permission_codenames=["view_group"])
+
+        self.admins      = Group.objects.create(name="Admins")
+        self.editors     = Group.objects.create(name="Editors")
+        self.viewers     = Group.objects.create(name="Viewers")
+        self.superadmins = Group.objects.create(name="Superadmins")
+
+    def _list(self, query_params=None):
+        request = factory.get("/groups/", query_params or {})
+        force_authenticate(request, user=self.viewer)
+        response = get_view({"get": "list"})(request)
+        response.render()
+        return response
+
+    def _names(self, response):
+        return [g["name"] for g in response.data["results"]]
+
+    # ------------------------------------------------------------------ #
+    # Pagination structure                                                 #
+    # ------------------------------------------------------------------ #
+
+    def test_response_has_pagination_envelope(self):
+        response = self._list()
+        for key in ("count", "next", "previous", "results"):
+            self.assertIn(key, response.data)
+
+    def test_count_reflects_total_not_page_size(self):
+        response = self._list({"page_size": 1})
+        self.assertEqual(response.data["count"], 4)
+        self.assertEqual(len(response.data["results"]), 1)
+
+    def test_next_is_present_when_results_exceed_page_size(self):
+        response = self._list({"page_size": 1})
+        self.assertIsNotNone(response.data["next"])
+
+    def test_previous_is_none_on_first_page(self):
+        response = self._list({"page_size": 1})
+        self.assertIsNone(response.data["previous"])
+
+    def test_page_2_returns_different_results(self):
+        page1 = self._names(self._list({"page_size": 2, "page": 1}))
+        page2 = self._names(self._list({"page_size": 2, "page": 2}))
+        self.assertEqual(len(set(page1) & set(page2)), 0)
+
+    # ------------------------------------------------------------------ #
+    # Filtering — name                                                     #
+    # ------------------------------------------------------------------ #
+
+    def test_filter_name_icontains_matches(self):
+        response = self._list({"name": "admin"})
+        names = self._names(response)
+        self.assertIn("Admins", names)
+        self.assertIn("Superadmins", names)
+        self.assertNotIn("Editors", names)
+        self.assertNotIn("Viewers", names)
+
+    def test_filter_name_case_insensitive(self):
+        response = self._list({"name": "ADMIN"})
+        names = self._names(response)
+        self.assertIn("Admins", names)
+        self.assertIn("Superadmins", names)
+
+    def test_filter_name_exact_substring(self):
+        response = self._list({"name": "Editors"})
+        names = self._names(response)
+        self.assertIn("Editors", names)
+        self.assertNotIn("Admins", names)
+
+    def test_filter_name_no_match_returns_empty(self):
+        response = self._list({"name": "zzznomatch"})
+        self.assertEqual(response.data["count"], 0)
+        self.assertEqual(response.data["results"], [])
+
+    def test_filter_name_partial_match(self):
+        response = self._list({"name": "er"})
+        names = self._names(response)
+        self.assertIn("Viewers", names)
+        self.assertNotIn("Admins", names)
+
+    # ------------------------------------------------------------------ #
+    # Search                                                               #
+    # ------------------------------------------------------------------ #
+
+    def test_search_matches_name(self):
+        response = self._list({"search": "Editors"})
+        names = self._names(response)
+        self.assertIn("Editors", names)
+        self.assertNotIn("Admins", names)
+
+    def test_search_is_case_insensitive(self):
+        response = self._list({"search": "editors"})
+        self.assertIn("Editors", self._names(response))
+
+    def test_search_partial_match(self):
+        response = self._list({"search": "admin"})
+        names = self._names(response)
+        self.assertIn("Admins", names)
+        self.assertIn("Superadmins", names)
+
+    def test_search_no_match_returns_empty(self):
+        response = self._list({"search": "zzznomatch"})
+        self.assertEqual(response.data["count"], 0)
+
+    def test_search_count_reflects_matches(self):
+        response = self._list({"search": "admin"})
+        self.assertEqual(response.data["count"], 2)
+
+    # ------------------------------------------------------------------ #
+    # Ordering                                                             #
+    # ------------------------------------------------------------------ #
+
+    def test_default_ordering_is_by_pk_descending(self):
+        response = self._list()
+        ids = [g["id"] for g in response.data["results"]]
+        self.assertEqual(ids, sorted(ids, reverse=True))
+
+    def test_ordering_name_ascending(self):
+        response = self._list({"ordering": "name"})
+        names = self._names(response)
+        self.assertEqual(names, sorted(names))
+
+    def test_ordering_name_descending(self):
+        response = self._list({"ordering": "-name"})
+        names = self._names(response)
+        self.assertEqual(names, sorted(names, reverse=True))
+
+    def test_ordering_non_whitelisted_field_is_ignored(self):
+        response = self._list({"ordering": "permissions"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_ordering_unknown_field_falls_back_to_default(self):
+        default   = self._names(self._list())
+        with_junk = self._names(self._list({"ordering": "nonexistent_field"}))
+        self.assertEqual(default, with_junk)
+
+    # ------------------------------------------------------------------ #
+    # Combined filter + search + ordering + pagination                     #
+    # ------------------------------------------------------------------ #
+
+    def test_filter_and_search_combined(self):
+        response = self._list({"name": "admin", "search": "super"})
+        names = self._names(response)
+        self.assertIn("Superadmins", names)
+        self.assertNotIn("Admins", names)
+        self.assertNotIn("Editors", names)
+
+    def test_filter_ordering_pagination_combined(self):
+        response = self._list({
+            "search":    "admin",
+            "ordering":  "name",
+            "page":      1,
+            "page_size": 1,
+        })
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 2)
+        self.assertEqual(len(response.data["results"]), 1)
+        # With name ascending, "Admins" comes before "Superadmins"
+        self.assertEqual(response.data["results"][0]["name"], "Admins")
+
+    def test_filter_ordering_pagination_page2(self):
+        response = self._list({
+            "search":    "admin",
+            "ordering":  "name",
+            "page":      2,
+            "page_size": 1,
+        })
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["results"][0]["name"], "Superadmins")

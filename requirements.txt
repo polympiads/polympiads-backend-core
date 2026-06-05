@@ -2,5 +2,8 @@
 django
 djangorestframework
 drf-spectacular
+django-cors-headers
+djangorestframework-filters
+django-filter
 
 coverage

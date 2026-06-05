@@ -1,12 +1,16 @@
 
 from django.contrib.auth.models import Permission
 
+from polympiads.contrib.auth.filters.permissions import PermissionFilterMixin
 from polympiads.contrib.auth.serializers.permission import PermissionSerializers
 
+from polympiads.contrib.utils.pagination import StandardPagination
 from polympiads.contrib.utils.views import MultiSerializerViewSet
 from polympiads.contrib.utils.permissions import NeverAllow, ModelPermissions, ActionPermissionMixin
 
-class PermissionViewSet (ActionPermissionMixin, MultiSerializerViewSet):
+class PermissionViewSet (ActionPermissionMixin, PermissionFilterMixin, MultiSerializerViewSet):
+    pagination_class = StandardPagination
+    
     permission_classes_default = [NeverAllow]
 
     permission_classes_by_action = {

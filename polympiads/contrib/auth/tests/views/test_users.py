@@ -68,7 +68,8 @@ class TestListAction(TestCase):
         force_authenticate(request, user=user)
         response = get_view({"get": "list"})(request)
         response.render()
-        self.assertIsInstance(response.data, list)
+        self.assertIsInstance(response.data, dict)
+        self.assertIsInstance(response.data["results"], list)
 
     def test_response_items_contain_expected_fields(self):
         user = make_user("viewer_l3", permission_codenames=["view_user"])
@@ -77,7 +78,10 @@ class TestListAction(TestCase):
         response = get_view({"get": "list"})(request)
         response.render()
         self.assertTrue(len(response.data) > 0)
-        item = response.data[0]
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["next"], None)
+        self.assertEqual(response.data["previous"], None)
+        item = response.data["results"][0]
         for field in USER_LIST_FIELDS:
             self.assertIn(field, item, msg=f"Missing field '{field}' in list response")
 
@@ -540,3 +544,346 @@ class TestDestroyAction(TestCase):
         force_authenticate(request, user=user)
         response = get_view({"delete": "destroy"}, pk=999999)(request)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+# ---------------------------------------------------------------------------
+# 7. ME  (GET /users/me/)  —  requires only IsAuthenticated
+# ---------------------------------------------------------------------------
+
+class TestMeAction(TestCase):
+
+    def setUp(self):
+        self.user = make_user("me_user")
+
+    def test_unauthenticated_returns_401(self):
+        request = factory.get("/users/me/")
+        response = get_view({"get": "me"})(request)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_authenticated_without_model_permissions_succeeds(self):
+        """me only requires IsAuthenticated, no model permission needed."""
+        user = make_user("me_no_perms")
+        request = factory.get("/users/me/")
+        force_authenticate(request, user=user)
+        response = get_view({"get": "me"})(request)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_returns_authenticated_user_data(self):
+        request = factory.get("/users/me/")
+        force_authenticate(request, user=self.user)
+        response = get_view({"get": "me"})(request)
+        response.render()
+        self.assertEqual(response.data["username"], self.user.username)
+
+    def test_does_not_return_another_users_data(self):
+        other = make_user("other_me_user")
+        request = factory.get("/users/me/")
+        force_authenticate(request, user=self.user)
+        response = get_view({"get": "me"})(request)
+        response.render()
+        self.assertNotEqual(response.data["username"], other.username)
+
+    def test_response_contains_expected_fields(self):
+        request = factory.get("/users/me/")
+        force_authenticate(request, user=self.user)
+        response = get_view({"get": "me"})(request)
+        response.render()
+        for field in USER_LIST_FIELDS:
+            self.assertIn(field, response.data, msg=f"Missing field '{field}' in me response")
+
+    def test_password_not_exposed(self):
+        request = factory.get("/users/me/")
+        force_authenticate(request, user=self.user)
+        response = get_view({"get": "me"})(request)
+        response.render()
+        self.assertNotIn("password", response.data)
+
+    def test_superuser_can_access_me(self):
+        superuser = User.objects.create_superuser(username="super_me", password="pw")
+        request = factory.get("/users/me/")
+        force_authenticate(request, user=superuser)
+        response = get_view({"get": "me"})(request)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        response.render()
+        self.assertEqual(response.data["username"], "super_me")
+
+    def test_me_returns_own_id(self):
+        request = factory.get("/users/me/")
+        force_authenticate(request, user=self.user)
+        response = get_view({"get": "me"})(request)
+        response.render()
+        self.assertEqual(response.data["id"], self.user.pk)
+
+    def test_me_is_not_a_list(self):
+        request = factory.get("/users/me/")
+        force_authenticate(request, user=self.user)
+        response = get_view({"get": "me"})(request)
+        response.render()
+        self.assertIsInstance(response.data, dict)
+
+    def test_view_permission_not_required(self):
+        """Explicitly confirm view_user permission is not needed for me."""
+        user = make_user("me_view_perm", permission_codenames=["view_user"])
+        user.user_permissions.clear()
+        request = factory.get("/users/me/")
+        force_authenticate(request, user=user)
+        response = get_view({"get": "me"})(request)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+# ---------------------------------------------------------------------------
+# 8. FILTERING, SEARCHING & ORDERING  (GET /users/)
+# ---------------------------------------------------------------------------
+
+class TestFilteringSearchingOrdering(TestCase):
+
+    def setUp(self):
+        self.viewer = make_user("viewer_f", permission_codenames=["view_user"])
+
+        self.alice = make_user("alice")
+        self.alice.first_name = "Alice"
+        self.alice.last_name  = "Smith"
+        self.alice.email      = "alice@example.com"
+        self.alice.is_active  = True
+        self.alice.is_staff   = False
+        self.alice.save()
+
+        self.bob = make_user("bob")
+        self.bob.first_name = "Bob"
+        self.bob.last_name  = "Jones"
+        self.bob.email      = "bob@example.com"
+        self.bob.is_active  = True
+        self.bob.is_staff   = True
+        self.bob.save()
+
+        self.inactive = make_user("inactive_user")
+        self.inactive.is_active = False
+        self.inactive.save()
+
+    def _list(self, query_params=None):
+        request = factory.get("/users/", query_params or {})
+        force_authenticate(request, user=self.viewer)
+        response = get_view({"get": "list"})(request)
+        response.render()
+        return response
+
+    def _usernames(self, response):
+        return [u["username"] for u in response.data["results"]]
+
+    # ------------------------------------------------------------------ #
+    # Pagination structure                                                 #
+    # ------------------------------------------------------------------ #
+
+    def test_response_has_pagination_envelope(self):
+        response = self._list()
+        for key in ("count", "next", "previous", "results"):
+            self.assertIn(key, response.data)
+
+    def test_count_reflects_total_not_page_size(self):
+        response = self._list({"page_size": 1})
+        # 4 users total: viewer_f, alice, bob, inactive_user
+        self.assertEqual(response.data["count"], 4)
+        self.assertEqual(len(response.data["results"]), 1)
+
+    def test_next_is_present_when_results_exceed_page_size(self):
+        response = self._list({"page_size": 1})
+        self.assertIsNotNone(response.data["next"])
+
+    def test_previous_is_none_on_first_page(self):
+        response = self._list({"page_size": 1})
+        self.assertIsNone(response.data["previous"])
+
+    def test_page_2_returns_different_results(self):
+        page1 = self._usernames(self._list({"page_size": 2, "page": 1}))
+        page2 = self._usernames(self._list({"page_size": 2, "page": 2}))
+        self.assertEqual(len(set(page1) & set(page2)), 0)
+
+    # ------------------------------------------------------------------ #
+    # Filtering — username                                                 #
+    # ------------------------------------------------------------------ #
+
+    def test_filter_username_icontains_matches(self):
+        response = self._list({"username": "ali"})
+        usernames = self._usernames(response)
+        self.assertIn("alice", usernames)
+        self.assertNotIn("bob", usernames)
+
+    def test_filter_username_case_insensitive(self):
+        response = self._list({"username": "ALI"})
+        self.assertIn("alice", self._usernames(response))
+
+    def test_filter_username_no_match_returns_empty(self):
+        response = self._list({"username": "zzznomatch"})
+        self.assertEqual(response.data["count"], 0)
+        self.assertEqual(response.data["results"], [])
+
+    # ------------------------------------------------------------------ #
+    # Filtering — email                                                    #
+    # ------------------------------------------------------------------ #
+
+    def test_filter_email_icontains_matches(self):
+        response = self._list({"email": "alice@"})
+        self.assertIn("alice", self._usernames(response))
+        self.assertNotIn("bob", self._usernames(response))
+
+    # ------------------------------------------------------------------ #
+    # Filtering — first_name / last_name                                  #
+    # ------------------------------------------------------------------ #
+
+    def test_filter_first_name_icontains(self):
+        response = self._list({"first_name": "bob"})
+        self.assertIn("bob", self._usernames(response))
+        self.assertNotIn("alice", self._usernames(response))
+
+    def test_filter_last_name_icontains(self):
+        response = self._list({"last_name": "smith"})
+        self.assertIn("alice", self._usernames(response))
+        self.assertNotIn("bob", self._usernames(response))
+
+    # ------------------------------------------------------------------ #
+    # Filtering — boolean fields                                           #
+    # ------------------------------------------------------------------ #
+
+    def test_filter_is_active_false(self):
+        response = self._list({"is_active": "false"})
+        usernames = self._usernames(response)
+        self.assertIn("inactive_user", usernames)
+        self.assertNotIn("alice", usernames)
+        self.assertNotIn("bob", usernames)
+
+    def test_filter_is_active_true(self):
+        response = self._list({"is_active": "true"})
+        usernames = self._usernames(response)
+        self.assertNotIn("inactive_user", usernames)
+
+    def test_filter_is_staff_true(self):
+        response = self._list({"is_staff": "true"})
+        usernames = self._usernames(response)
+        self.assertIn("bob", usernames)
+        self.assertNotIn("alice", usernames)
+
+    def test_filter_is_staff_false(self):
+        response = self._list({"is_staff": "false"})
+        self.assertNotIn("bob", self._usernames(response))
+
+    def test_filter_is_superuser_false(self):
+        response = self._list({"is_superuser": "false"})
+        usernames = self._usernames(response)
+        self.assertIn("alice", usernames)
+        self.assertIn("bob", usernames)
+
+    # ------------------------------------------------------------------ #
+    # Filtering — combined                                                 #
+    # ------------------------------------------------------------------ #
+
+    def test_filter_combined_is_active_and_is_staff(self):
+        response = self._list({"is_active": "true", "is_staff": "true"})
+        usernames = self._usernames(response)
+        self.assertIn("bob", usernames)
+        self.assertNotIn("alice", usernames)
+        self.assertNotIn("inactive_user", usernames)
+
+    def test_filter_combined_no_match_returns_empty(self):
+        response = self._list({"is_active": "false", "is_staff": "true"})
+        self.assertEqual(response.data["count"], 0)
+
+    # ------------------------------------------------------------------ #
+    # Search                                                               #
+    # ------------------------------------------------------------------ #
+
+    def test_search_matches_username(self):
+        response = self._list({"search": "alice"})
+        self.assertIn("alice", self._usernames(response))
+        self.assertNotIn("bob", self._usernames(response))
+
+    def test_search_matches_email(self):
+        response = self._list({"search": "bob@example"})
+        self.assertIn("bob", self._usernames(response))
+        self.assertNotIn("alice", self._usernames(response))
+
+    def test_search_matches_first_name(self):
+        response = self._list({"search": "Alice"})
+        self.assertIn("alice", self._usernames(response))
+
+    def test_search_matches_last_name(self):
+        response = self._list({"search": "Jones"})
+        self.assertIn("bob", self._usernames(response))
+        self.assertNotIn("alice", self._usernames(response))
+
+    def test_search_is_case_insensitive(self):
+        response = self._list({"search": "ALICE"})
+        self.assertIn("alice", self._usernames(response))
+
+    def test_search_no_match_returns_empty(self):
+        response = self._list({"search": "zzznomatch"})
+        self.assertEqual(response.data["count"], 0)
+
+    def test_search_count_reflects_matches(self):
+        response = self._list({"search": "alice"})
+        self.assertEqual(response.data["count"], 1)
+
+    # ------------------------------------------------------------------ #
+    # Ordering                                                             #
+    # ------------------------------------------------------------------ #
+
+    def test_default_ordering_is_by_pk(self):
+        response = self._list()
+        ids = [u["id"] for u in response.data["results"]]
+        self.assertEqual(ids, sorted(ids, reverse=True))
+
+    def test_ordering_username_ascending(self):
+        response = self._list({"ordering": "username"})
+        usernames = self._usernames(response)
+        self.assertEqual(usernames, sorted(usernames))
+
+    def test_ordering_username_descending(self):
+        response = self._list({"ordering": "-username"})
+        usernames = self._usernames(response)
+        self.assertEqual(usernames, sorted(usernames, reverse=True))
+
+    def test_ordering_email_ascending(self):
+        response = self._list({"ordering": "email"})
+        emails = [u["email"] for u in response.data["results"]]
+        self.assertEqual(emails, sorted(emails))
+
+    def test_ordering_date_joined_descending(self):
+        response = self._list({"ordering": "-date_joined"})
+        dates = [u["date_joined"] for u in response.data["results"]]
+        self.assertEqual(dates, sorted(dates, reverse=True))
+
+    def test_ordering_is_active_ascending(self):
+        response = self._list({"ordering": "is_active"})
+        flags = [u["is_active"] for u in response.data["results"]]
+        self.assertEqual(flags, sorted(flags))
+
+    def test_ordering_non_whitelisted_field_is_ignored(self):
+        """Ordering by a non-whitelisted field must not raise an error."""
+        response = self._list({"ordering": "password"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_ordering_unknown_field_falls_back_to_default(self):
+        default   = self._usernames(self._list())
+        with_junk = self._usernames(self._list({"ordering": "nonexistent_field"}))
+        self.assertEqual(default, with_junk)
+
+    # ------------------------------------------------------------------ #
+    # Combined filter + search + ordering + pagination                     #
+    # ------------------------------------------------------------------ #
+
+    def test_filter_and_search_combined(self):
+        response = self._list({"is_active": "true", "search": "alice"})
+        usernames = self._usernames(response)
+        self.assertIn("alice", usernames)
+        self.assertNotIn("bob", usernames)
+        self.assertNotIn("inactive_user", usernames)
+
+    def test_filter_search_ordering_pagination_combined(self):
+        response = self._list({
+            "is_active": "true",
+            "search":    "example.com",
+            "ordering":  "username",
+            "page":      1,
+            "page_size": 1,
+        })
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertGreaterEqual(response.data["count"], 1)
+        results = response.data["results"]
+        self.assertEqual(len(results), 1)
