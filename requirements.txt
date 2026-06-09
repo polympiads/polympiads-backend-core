@@ -1,9 +1,9 @@
 
-django
-djangorestframework
-drf-spectacular
-django-cors-headers
-djangorestframework-filters
-django-filter
+django==6.0.5
+djangorestframework==3.17.1
+drf-spectacular==0.29.0
+django-cors-headers==4.9.0
+djangorestframework-filters==0.11.1
+django-filter==25.2
 
-coverage
+coverage==7.6.10

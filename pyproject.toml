@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "polympiads-backend-core"
+version = "0.0.0"
+description = "Core backend functionality for Polympiads"
+requires-python = ">=3.8"
+
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.packages.find]
+include = ["polympiads*"]
+where = ["."]
