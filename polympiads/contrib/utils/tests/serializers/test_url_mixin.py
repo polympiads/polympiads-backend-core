@@ -13,7 +13,7 @@ class Widget(models.Model):
     name = models.CharField(max_length=100)
 
     class Meta:
-        app_label = "tests"
+        app_label = "polympiads_auth"
 
 class WidgetSerializer(BrowsableUrlMixin, serializers.ModelSerializer):
     class Meta:
@@ -39,7 +39,7 @@ def make_request(factory: RequestFactory, accept_html: bool) -> Request:
     drf_request.accepted_renderer = renderer
     return drf_request
 
-@isolate_apps("tests")
+@isolate_apps("polympiads.contrib.auth")
 @override_settings(ROOT_URLCONF=__name__)
 class BrowsableUrlMixinTests(TestCase):
     @classmethod
