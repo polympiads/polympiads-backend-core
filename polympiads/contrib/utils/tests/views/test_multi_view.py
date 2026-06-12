@@ -3,6 +3,7 @@ from django.test import TestCase
 
 from polympiads.contrib.utils.serializers.mixins import BrowsableUrlMixin, BROWSABLE_URL_MIXIN_WARNING
 from polympiads.contrib.utils.views import MultiSerializerViewSet
+from polympiads.contrib.utils.views.multi import extra_serializer
 
 class Seri1: pass
 class Seri2 (BrowsableUrlMixin): pass
@@ -49,6 +50,7 @@ from django.test import TestCase, RequestFactory
 from rest_framework import serializers, routers
 from rest_framework.request import Request
 from rest_framework.test import APIRequestFactory
+from rest_framework.decorators import action
 
 from polympiads.contrib.utils.views import MultiSerializerViewSet
 
@@ -58,9 +60,16 @@ class SummarySerializer(serializers.Serializer):
 class DetailSerializer(serializers.Serializer):
     pass
 
+class S1 (serializers.Serializer): pass
+class S2 (serializers.Serializer): pass
+
 class ConcreteViewSet(MultiSerializerViewSet):
     summary_serializer_class = SummarySerializer
     details_serializer_class = DetailSerializer
+
+    @extra_serializer(S1, S2)
+    @action(detail = False, methods = [ 'get' ], url_path="f")
+    def f (): pass 
 
 def make_viewset(action: str) -> ConcreteViewSet:
     request = APIRequestFactory().get("/")
@@ -76,26 +85,37 @@ class MultiSerializerViewSetTests(TestCase):
     def test_list_returns_summary_serializer(self):
         viewset = make_viewset("list")
         self.assertIs(viewset.get_serializer_class(), SummarySerializer)
+        self.assertIs(viewset.get_response_serializer_class(), SummarySerializer)
 
     def test_retrieve_returns_detail_serializer(self):
         viewset = make_viewset("retrieve")
         self.assertIs(viewset.get_serializer_class(), DetailSerializer)
+        self.assertIs(viewset.get_response_serializer_class(), DetailSerializer)
 
     def test_create_returns_detail_serializer(self):
         viewset = make_viewset("create")
         self.assertIs(viewset.get_serializer_class(), DetailSerializer)
+        self.assertIs(viewset.get_response_serializer_class(), DetailSerializer)
 
     def test_update_returns_detail_serializer(self):
         viewset = make_viewset("update")
         self.assertIs(viewset.get_serializer_class(), DetailSerializer)
+        self.assertIs(viewset.get_response_serializer_class(), DetailSerializer)
 
     def test_partial_update_returns_detail_serializer(self):
         viewset = make_viewset("partial_update")
         self.assertIs(viewset.get_serializer_class(), DetailSerializer)
+        self.assertIs(viewset.get_response_serializer_class(), DetailSerializer)
 
     def test_destroy_returns_detail_serializer(self):
         viewset = make_viewset("destroy")
         self.assertIs(viewset.get_serializer_class(), DetailSerializer)
+        self.assertIs(viewset.get_response_serializer_class(), DetailSerializer)
+
+    def test_f_returns_s1s2_serializers(self):
+        viewset = make_viewset("f")
+        self.assertIs(viewset.get_serializer_class(), S1)
+        self.assertIs(viewset.get_response_serializer_class(), S2)
 
     def test_summary_serializer_class_none_by_default(self):
         viewset = MultiSerializerViewSet()

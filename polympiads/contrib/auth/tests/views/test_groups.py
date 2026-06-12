@@ -546,3 +546,142 @@ class TestFilteringSearchingOrdering(TestCase):
         })
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["results"][0]["name"], "Superadmins")
+
+# ---------------------------------------------------------------------------
+# 8. PERMISSIONS  (PATCH /groups/<pk>/permissions/)  —  requires change_group
+# ---------------------------------------------------------------------------
+
+class TestPermissionsAction(TestCase):
+
+    def setUp(self):
+        self.group = Group.objects.create(name="Permissions Test Group")
+        self.url = f"/groups/{self.group.pk}/permissions/"
+
+        self.content_type = ContentType.objects.get_for_model(Group)
+        app_label = self.content_type.app_label
+
+        self.view_perm   = f"{app_label}.view_group"
+        self.add_perm    = f"{app_label}.add_group"
+        self.change_perm = f"{app_label}.change_group"
+
+    def _permission(self, codename):
+        return Permission.objects.get(codename=codename, content_type=self.content_type)
+
+    def test_unauthenticated_returns_401(self):
+        request = factory.patch(self.url, {"add_permissions": [self.view_perm]}, format="json")
+        response = get_view({"patch": "permissions"}, pk=self.group.pk)(request)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_authenticated_without_permissions_is_denied(self):
+        user = make_user("no_perms_perm")
+        request = factory.patch(self.url, {"add_permissions": [self.view_perm]}, format="json")
+        force_authenticate(request, user=user)
+        response = get_view({"patch": "permissions"}, pk=self.group.pk)(request)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_authenticated_with_only_view_permission_is_denied(self):
+        user = make_user("viewer_perm", permission_codenames=["view_group"])
+        request = factory.patch(self.url, {"add_permissions": [self.view_perm]}, format="json")
+        force_authenticate(request, user=user)
+        response = get_view({"patch": "permissions"}, pk=self.group.pk)(request)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_authenticated_with_change_permission_succeeds(self):
+        user = make_user("changer_perm", permission_codenames=["change_group"])
+        request = factory.patch(self.url, {"add_permissions": [self.view_perm]}, format="json")
+        force_authenticate(request, user=user)
+        response = get_view({"patch": "permissions"}, pk=self.group.pk)(request)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_add_permissions_persists_to_database(self):
+        user = make_user("changer_perm2", permission_codenames=["change_group"])
+        request = factory.patch(self.url, {"add_permissions": [self.view_perm, self.add_perm]}, format="json")
+        force_authenticate(request, user=user)
+        get_view({"patch": "permissions"}, pk=self.group.pk)(request)
+        self.group.refresh_from_db()
+        codenames = set(self.group.permissions.values_list("codename", flat=True))
+        self.assertIn("view_group", codenames)
+        self.assertIn("add_group", codenames)
+
+    def test_remove_permissions_persists_to_database(self):
+        self.group.permissions.add(self._permission("view_group"))
+        user = make_user("changer_perm3", permission_codenames=["change_group"])
+        request = factory.patch(self.url, {"remove_permissions": [self.view_perm]}, format="json")
+        force_authenticate(request, user=user)
+        get_view({"patch": "permissions"}, pk=self.group.pk)(request)
+        self.group.refresh_from_db()
+        codenames = set(self.group.permissions.values_list("codename", flat=True))
+        self.assertNotIn("view_group", codenames)
+
+    def test_add_and_remove_combined(self):
+        self.group.permissions.add(self._permission("view_group"))
+        user = make_user("changer_perm4", permission_codenames=["change_group"])
+        request = factory.patch(self.url, {
+            "add_permissions": [self.add_perm],
+            "remove_permissions": [self.view_perm],
+        }, format="json")
+        force_authenticate(request, user=user)
+        response = get_view({"patch": "permissions"}, pk=self.group.pk)(request)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.group.refresh_from_db()
+        codenames = set(self.group.permissions.values_list("codename", flat=True))
+        self.assertIn("add_group", codenames)
+        self.assertNotIn("view_group", codenames)
+
+    def test_response_contains_expected_fields(self):
+        user = make_user("changer_perm5", permission_codenames=["change_group"])
+        request = factory.patch(self.url, {"add_permissions": [self.view_perm]}, format="json")
+        force_authenticate(request, user=user)
+        response = get_view({"patch": "permissions"}, pk=self.group.pk)(request)
+        response.render()
+        for field in ("id", "name", "permissions"):
+            self.assertIn(field, response.data, msg=f"Missing field '{field}' in permissions response")
+
+    def test_response_reflects_updated_permissions(self):
+        user = make_user("changer_perm6", permission_codenames=["change_group"])
+        request = factory.patch(self.url, {"add_permissions": [self.view_perm, self.add_perm]}, format="json")
+        force_authenticate(request, user=user)
+        response = get_view({"patch": "permissions"}, pk=self.group.pk)(request)
+        response.render()
+        permission_codes = [p["permission"] for p in response.data["permissions"]]
+        self.assertIn(self.view_perm, permission_codes)
+        self.assertIn(self.add_perm, permission_codes)
+
+    def test_empty_payload_returns_400(self):
+        user = make_user("changer_perm7", permission_codenames=["change_group"])
+        request = factory.patch(self.url, {}, format="json")
+        force_authenticate(request, user=user)
+        response = get_view({"patch": "permissions"}, pk=self.group.pk)(request)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_overlapping_add_and_remove_returns_400(self):
+        user = make_user("changer_perm8", permission_codenames=["change_group"])
+        request = factory.patch(self.url, {
+            "add_permissions": [self.view_perm],
+            "remove_permissions": [self.view_perm],
+        }, format="json")
+        force_authenticate(request, user=user)
+        response = get_view({"patch": "permissions"}, pk=self.group.pk)(request)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_invalid_permission_format_returns_400(self):
+        user = make_user("changer_perm9", permission_codenames=["change_group"])
+        request = factory.patch(self.url, {"add_permissions": ["not_a_valid_format"]}, format="json")
+        force_authenticate(request, user=user)
+        response = get_view({"patch": "permissions"}, pk=self.group.pk)(request)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_nonexistent_permission_returns_400(self):
+        user = make_user("changer_perm10", permission_codenames=["change_group"])
+        app_label = self.content_type.app_label
+        request = factory.patch(self.url, {"add_permissions": [f"{app_label}.does_not_exist_perm"]}, format="json")
+        force_authenticate(request, user=user)
+        response = get_view({"patch": "permissions"}, pk=self.group.pk)(request)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_permissions_on_non_existent_pk_returns_404(self):
+        user = make_user("changer_perm11", permission_codenames=["change_group"])
+        request = factory.patch("/groups/999999/permissions/", {"add_permissions": [self.view_perm]}, format="json")
+        force_authenticate(request, user=user)
+        response = get_view({"patch": "permissions"}, pk=999999)(request)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)

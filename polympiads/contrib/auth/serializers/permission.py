@@ -1,15 +1,12 @@
 
 from rest_framework import serializers
 
+from polympiads.contrib.auth.serializers.fields.permission import PermissionStringField
 from polympiads.contrib.utils.serializers.mixins import BrowsableUrlMixin
 from django.contrib.auth.models    import Permission
 
 class PermissionDetailSerializer (BrowsableUrlMixin, serializers.ModelSerializer):
-    permission = serializers.SerializerMethodField()
-
-    def get_permission (self, permission: Permission) -> str:
-        """Returns 'app_label.codename' - the format used in has_perm()"""
-        return f"{permission.content_type.app_label}.{permission.codename}"
+    permission = PermissionStringField(read_only=True)
 
     class Meta:
         model = Permission
