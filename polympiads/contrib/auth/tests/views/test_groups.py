@@ -560,9 +560,18 @@ class TestPermissionsAction(TestCase):
         self.content_type = ContentType.objects.get_for_model(Group)
         app_label = self.content_type.app_label
 
-        self.view_perm   = f"{app_label}.view_group"
-        self.add_perm    = f"{app_label}.add_group"
-        self.change_perm = f"{app_label}.change_group"
+        self.view_permission   = self._permission("view_group")
+        self.add_permission    = self._permission("add_group")
+        self.change_permission = self._permission("change_group")
+
+        self.view_perm   = self.view_permission.pk
+        self.add_perm    = self.add_permission.pk
+        self.change_perm = self.change_permission.pk
+
+        # Codename strings, kept for asserting against response payloads
+        # (the group-permissions output format is unrelated to this change).
+        self.view_perm_code = f"{app_label}.view_group"
+        self.add_perm_code  = f"{app_label}.add_group"
 
     def _permission(self, codename):
         return Permission.objects.get(codename=codename, content_type=self.content_type)
@@ -604,7 +613,7 @@ class TestPermissionsAction(TestCase):
         self.assertIn("add_group", codenames)
 
     def test_remove_permissions_persists_to_database(self):
-        self.group.permissions.add(self._permission("view_group"))
+        self.group.permissions.add(self.view_permission)
         user = make_user("changer_perm3", permission_codenames=["change_group"])
         request = factory.patch(self.url, {"remove_permissions": [self.view_perm]}, format="json")
         force_authenticate(request, user=user)
@@ -614,7 +623,7 @@ class TestPermissionsAction(TestCase):
         self.assertNotIn("view_group", codenames)
 
     def test_add_and_remove_combined(self):
-        self.group.permissions.add(self._permission("view_group"))
+        self.group.permissions.add(self.view_permission)
         user = make_user("changer_perm4", permission_codenames=["change_group"])
         request = factory.patch(self.url, {
             "add_permissions": [self.add_perm],
@@ -644,8 +653,8 @@ class TestPermissionsAction(TestCase):
         response = get_view({"patch": "permissions"}, pk=self.group.pk)(request)
         response.render()
         permission_codes = [p["permission"] for p in response.data["permissions"]]
-        self.assertIn(self.view_perm, permission_codes)
-        self.assertIn(self.add_perm, permission_codes)
+        self.assertIn(self.view_perm_code, permission_codes)
+        self.assertIn(self.add_perm_code, permission_codes)
 
     def test_empty_payload_returns_400(self):
         user = make_user("changer_perm7", permission_codenames=["change_group"])
@@ -673,8 +682,8 @@ class TestPermissionsAction(TestCase):
 
     def test_nonexistent_permission_returns_400(self):
         user = make_user("changer_perm10", permission_codenames=["change_group"])
-        app_label = self.content_type.app_label
-        request = factory.patch(self.url, {"add_permissions": [f"{app_label}.does_not_exist_perm"]}, format="json")
+        non_existent_pk = Permission.objects.order_by("-pk").first().pk + 1
+        request = factory.patch(self.url, {"add_permissions": [non_existent_pk]}, format="json")
         force_authenticate(request, user=user)
         response = get_view({"patch": "permissions"}, pk=self.group.pk)(request)
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)

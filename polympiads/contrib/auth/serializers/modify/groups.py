@@ -6,8 +6,18 @@ from rest_framework import serializers
 from django.contrib.auth.models import Group
 
 class ModifyGroupsSerializer (serializers.Serializer):
-    add_groups    = serializers.SlugRelatedField(slug_field="name", queryset=Group.objects.all(), many=True, required=False, default=list)
-    remove_groups = serializers.SlugRelatedField(slug_field="name", queryset=Group.objects.all(), many=True, required=False, default=list)
+    add_groups = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=Group.objects.all(),
+        required=False,
+        default=list,
+    )
+    remove_groups = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=Group.objects.all(),
+        required=False,
+        default=list,
+    )
 
     def validate(self, data: Dict[str, List[Group]]):
         add_groups    : Set[int] = { group.pk for group in data.get("add_groups", []) }

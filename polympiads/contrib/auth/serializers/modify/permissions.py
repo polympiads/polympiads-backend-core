@@ -5,11 +5,19 @@ from rest_framework import serializers
 
 from django.contrib.auth.models import Permission
 
-from polympiads.contrib.auth.serializers.fields.permission import PermissionStringRelatedField
-
 class ModifyPermissionsSerializer (serializers.Serializer):
-    add_permissions    = PermissionStringRelatedField(many = True, required = False, default = list)
-    remove_permissions = PermissionStringRelatedField(many = True, required = False, default = list)
+    add_permissions = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=Permission.objects.all(),
+        required=False,
+        default=list,
+    )
+    remove_permissions = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=Permission.objects.all(),
+        required=False,
+        default=list,
+    )
 
     def validate(self, data: Dict[str, List[Permission]]):
         add_perms    : Set[int] = { perm.pk for perm in data.get("add_permissions", []) }
